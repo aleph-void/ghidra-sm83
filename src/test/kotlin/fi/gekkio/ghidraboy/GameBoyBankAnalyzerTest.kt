@@ -271,6 +271,32 @@ class GameBoyBankAnalyzerTest : IntegrationTest() {
         }
 
     @Test
+    fun `a call from the entry code before any bank write goes to the power-up bank`() =
+        // LD HL,$C000; CALL $4000; JR -2: the MBC maps bank 1 at power-up
+        analyze(
+            "",
+            "",
+            mbc1Rom(0x100000).also { rom ->
+                hex("21 00 c0 cd 00 40 18 fe").copyInto(rom, 0x0150)
+            },
+        ) { program ->
+            assertEquals(setOf(program.bankAddr(1, 0x4000)), program.refs(0x0153, RefType.CALL_OVERRIDE_UNCONDITIONAL))
+        }
+
+    @Test
+    fun `a possible bank write before the call keeps the power-up bank out`() =
+        // LD HL,$2000; LD (HL),A; CALL $4000; JR -2: A is unknown
+        analyze(
+            "",
+            "",
+            mbc1Rom(0x100000).also { rom ->
+                hex("21 00 20 77 cd 00 40 18 fe").copyInto(rom, 0x0150)
+            },
+        ) { program ->
+            assertEquals(emptySet<Address>(), program.refs(0x0154, RefType.CALL_OVERRIDE_UNCONDITIONAL))
+        }
+
+    @Test
     fun `SVBK and VBK writes resolve RAM references into the selected bank`() =
         analyze("", "", cgbRom()) { program ->
             fun dataRefs(from: Long) =
@@ -900,6 +926,47 @@ class GameBoyBankAnalyzerTest : IntegrationTest() {
             assertEquals(setOf(copy), program.refs(0x060c, RefType.CALL_OVERRIDE_UNCONDITIONAL))
             assertEquals(FlowOverride.CALL_RETURN, program.listing.getInstructionAt(program.addr(0x060c)).flowOverride)
             assertNotNull(program.functionManager.getFunctionAt(copy))
+        }
+
+    @Test
+    fun `a helper copying from DE to HL is found by running it`() =
+        analyze(
+            "",
+            "",
+            rom().also { rom ->
+                hex("cd 00 06 c9").copyInto(rom, 0x0008)
+                // LD HL,$FF80; LD DE,$0700; LD BC,4; CALL copy; CALL $FF80; RET
+                hex("21 80 ff 11 00 07 01 04 00 cd 73 0e cd 80 ff c9").copyInto(rom, 0x0600)
+                // copy: LD A,B; OR C; RET Z; LD A,(DE); LD (HL+),A; INC DE; DEC BC; JR copy
+                hex("78 b1 c8 1a 22 13 0b 18 f7").copyInto(rom, 0x0e73)
+                // LD A,($C001); RET
+                hex("fa 01 c0 c9").copyInto(rom, 0x0700)
+            },
+        ) { program ->
+            val copy = program.addressFactory.getAddressSpace("hram_code_ff80")?.getAddress(0xff80)
+            assertNotNull(copy)
+            assertEquals(setOf(copy), program.refs(0x060c, RefType.CALL_OVERRIDE_UNCONDITIONAL))
+            assertNotNull(program.listing.getInstructionAt(copy))
+            assertNotNull(program.functionManager.getFunctionAt(copy))
+            // no empty function is left at the default-space address
+            assertEquals(null, program.functionManager.getFunctionAt(program.addr(0xff80)))
+        }
+
+    @Test
+    fun `a call that writes ROM bytes elsewhere than RAM maps no code`() =
+        analyze(
+            "",
+            "",
+            rom().also { rom ->
+                hex("cd 00 06 c9").copyInto(rom, 0x0008)
+                // LD HL,$C000; LD DE,$0700; LD BC,4; CALL nothing; CALL $C000; RET
+                hex("21 00 c0 11 00 07 01 04 00 cd 73 0e cd 00 c0 c9").copyInto(rom, 0x0600)
+                // nothing: RET
+                hex("c9").copyInto(rom, 0x0e73)
+                hex("fa 01 c0 c9").copyInto(rom, 0x0700)
+            },
+        ) { program ->
+            assertTrue(program.memory.blocks.none { it.name.contains("_code_") })
         }
 
     @Test

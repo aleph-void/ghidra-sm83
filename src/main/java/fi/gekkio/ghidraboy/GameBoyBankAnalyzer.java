@@ -21,6 +21,10 @@ import ghidra.app.services.AnalyzerType;
 import ghidra.app.util.importer.MessageLog;
 import ghidra.framework.options.Options;
 import ghidra.framework.store.LockException;
+import ghidra.pcode.emu.PcodeEmulationCallbacks;
+import ghidra.pcode.emu.PcodeThread;
+import ghidra.pcode.exec.PcodeExecutorState;
+import ghidra.pcode.exec.PcodeExecutorStatePiece;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressOverflowException;
 import ghidra.program.model.address.AddressSet;
@@ -190,6 +194,7 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
             } else if (!isCall && inUninitializedCode(program, instr.getFlows()[0])) {
                 // routines copied to RAM at runtime: the decompiler cannot branch into memory without instructions
                 instr.setFlowOverride(FlowOverride.CALL_RETURN);
+                clearFlowErrors(program, instr);
                 functions.add(instr.getFlows()[0]);
             }
         }
@@ -204,7 +209,23 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
         if (!functions.isEmpty()) {
             manager.createFunction(functions, false);
         }
+        removeShadowFunctions(program);
         return true;
+    }
+
+    // the flow into a copied routine also names its (uninitialised) default-space address; no code lives there
+    private static void removeShadowFunctions(Program program) {
+        var functions = program.getFunctionManager();
+        for (var block : program.getMemory().getBlocks()) {
+            if (!block.isOverlay() || !block.isMapped() || !block.getName().contains("_code_")) {
+                continue;
+            }
+            var space = program.getAddressFactory().getDefaultAddressSpace();
+            var shadow = functions.getFunctionAt(space.getAddress(block.getStart().getOffset()));
+            if (shadow != null && program.getListing().getInstructionAt(shadow.getEntryPoint()) == null) {
+                functions.removeFunction(shadow.getEntryPoint());
+            }
+        }
     }
 
     // targets that failed to disassemble over code a later fixup cleared
@@ -261,19 +282,34 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
         callInto(program, instr, target, disassemble, functions);
     }
 
+    // the default-space flow error (no code can be disassembled where the jump or call lands) no longer applies
+    private static void clearFlowErrors(Program program, Instruction instr) {
+        var bookmarks = program.getBookmarkManager();
+        for (var bookmark : bookmarks.getBookmarks(instr.getAddress())) {
+            var comment = bookmark.getComment();
+            if (comment.contains("non-existing memory") || comment.contains("uninitialized memory block") || comment.contains("mapped memory block")) {
+                bookmarks.removeBookmark(bookmark);
+            }
+        }
+    }
+
     private static void callInto(Program program, Instruction instr, Address target, AddressSet disassemble, AddressSet functions) {
         // a far JP is a tail call: the decompiler cannot branch into another address space
         if (!instr.getFlowType().isCall()) {
             instr.setFlowOverride(FlowOverride.CALL_RETURN);
         }
         addPrimaryReference(program, instr.getAddress(), target, RefType.CALL_OVERRIDE_UNCONDITIONAL);
-        // the default-space flow error no longer applies
-        var bookmarks = program.getBookmarkManager();
-        for (var bookmark : bookmarks.getBookmarks(instr.getAddress())) {
-            if (bookmark.getComment().contains("non-existing memory")) {
-                bookmarks.removeBookmark(bookmark);
+        // a copied routine's default-space address holds no code, and must not become a function
+        if (target.getAddressSpace().isOverlaySpace() && target.getAddressSpace().getName().contains("_code_")) {
+            var references = program.getReferenceManager();
+            var plain = program.getAddressFactory().getDefaultAddressSpace().getAddress(target.getOffset());
+            for (var ref : references.getReferencesFrom(instr.getAddress())) {
+                if (ref.getToAddress().equals(plain) && ref.getReferenceType().isFlow()) {
+                    references.delete(ref);
+                }
             }
         }
+        clearFlowErrors(program, instr);
         disassemble.add(target);
         functions.add(target);
     }
@@ -283,7 +319,8 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
     private static final byte[] COUNT_C = {0x0d, 0x20, (byte) 0xfa};
     private static final byte[][] COUNT_BC = {{0x0b, 0x79, (byte) 0xb0, 0x20, (byte) 0xf8}, {0x0b, 0x78, (byte) 0xb1, 0x20, (byte) 0xf8}};
 
-    // ROM routines copied to WRAM or HRAM by a constant HL -> DE loop, inline or called
+    // ROM routines copied to WRAM or HRAM by a constant HL -> DE loop, inline or called; a called
+    // helper that is not one of the recognised loops is run in the emulator (copyByEmulation)
     private static void codeCopy(Program program, Instruction instr, AddressSet disassemble, AddressSet functions, MessageLog log) {
         var flowType = instr.getFlowType();
         var isCall = flowType.isCall() && !flowType.isConditional() && instr.getFlows().length == 1;
@@ -294,13 +331,18 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
                 return;
             }
         } catch (MemoryAccessException e) {
-            return;
-        }
-        if (!Arrays.equals(bytes, 0, 3, COPY_BODY, 0, 3)) {
+            // a helper in a ROM bank that is not mapped here yet
+            if (isCall) {
+                copyByEmulation(program, instr, disassemble, functions, log);
+            }
             return;
         }
         var byC = Arrays.equals(bytes, 3, 6, COUNT_C, 0, 3);
-        if (!byC && !Arrays.equals(bytes, 3, 8, COUNT_BC[0], 0, 5) && !Arrays.equals(bytes, 3, 8, COUNT_BC[1], 0, 5)) {
+        if (!Arrays.equals(bytes, 0, 3, COPY_BODY, 0, 3)
+                || !byC && !Arrays.equals(bytes, 3, 8, COUNT_BC[0], 0, 5) && !Arrays.equals(bytes, 3, 8, COUNT_BC[1], 0, 5)) {
+            if (isCall) {
+                copyByEmulation(program, instr, disassemble, functions, log);
+            }
             return;
         }
         var values = loads(program, instr, loop, loop.add(byC ? 5 : 7));
@@ -312,11 +354,217 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
             return;
         }
         var length = byC ? (c == 0 ? 0x100 : c) : b << 8 | c;
+        mapCopy(program, instr, hl, de, length, disassemble, functions, log);
+    }
+
+    private static final int EMULATION_STEPS = 200_000;
+
+    // A call whose HL, DE and BC are loaded with constants right before it, to a routine that
+    // copies BC bytes between HL and DE in either direction in whatever way (LDIR-style loops with
+    // other counters, DE -> HL, unrolled): run the routine on the program's bytes and map the
+    // copy when RAM at the destination ends up equal to the ROM at the source.
+    private static void copyByEmulation(Program program, Instruction call, AddressSet disassemble, AddressSet functions, MessageLog log) {
+        var target = literalTarget(program, call);
+        if (call.getAddress().getAddressSpace().isOverlaySpace() || target == null) {
+            return;
+        }
+        var values = loads(program, call, target, target);
+        var hl = values.get("HL");
+        var de = values.get("DE");
+        var b = values.get("B");
+        var c = values.get("C");
+        if (hl == null || de == null || c == null) {
+            return;
+        }
+        // B never loaded: a loop that counts in C alone copies C bytes (256 for 0) whatever B holds, which
+        // two different B values must agree on
+        var length = b != null ? b << 8 | c : c == 0 ? 0x100 : c;
+        if (length == 0 || length > 0x2000 || call.getFallThrough() == null) {
+            return;
+        }
+        // the helper is ROM, in bank 0, the unbanked area or (entry code) the power-up bank
+        if (target.getOffset() >= 0x8000 || copiedCode(program, target.getOffset()) != null) {
+            return;
+        }
+        // the destination is RAM, the source ROM; the helper decides the direction
+        int[][] candidates = {{hl, de}, {de, hl}};
+        for (var candidate : candidates) {
+            int source = candidate[0];
+            int destination = candidate[1];
+            if (source >= 0x8000 || destination < 0xc000) {
+                continue;
+            }
+            var copied = true;
+            for (var bValue : b != null ? new int[] {b} : new int[] {0, 1}) {
+                copied &= emulatedCopy(program, call, hl, de, bValue << 8 | c, source, destination, length);
+            }
+            if (copied) {
+                mapCopy(program, call, source, destination, length, disassemble, functions, log);
+                return;
+            }
+        }
+    }
+
+    // Runs the routine at the call's target on the program's ROM with constant HL, DE and BC until it returns to
+    // the instruction after the call. Null when it cannot be run (undecodable code, a missing return, too long).
+    private static Run runCall(Program program, Instruction call, int hl, int de, int bc, int watchFrom, int watchTo) {
+        var language = program.getLanguage();
+        var space = program.getAddressFactory().getDefaultAddressSpace();
+        var back = call.getFallThrough();
+        if (back == null) {
+            return null;
+        }
+        try {
+            var watcher = new WriteWatcher(watchFrom, watchTo);
+            var machine = new GameBoyEmulation.Emulator(language, watcher);
+            var state = machine.getSharedState();
+            // the program's ROM (and anything else initialised) in the default space
+            for (var block : program.getMemory().getBlocks()) {
+                if (block.isInitialized() && !block.isOverlay() && block.getStart().getAddressSpace().equals(space) && block.getStart().getOffset() < 0x8000) {
+                    var bytes = new byte[(int) block.getSize()];
+                    block.getBytes(block.getStart(), bytes);
+                    state.setVar(block.getStart(), bytes.length, true, bytes);
+                }
+            }
+            // power-up: ROM bank 1 at 4000-7FFF
+            var bank1 = program.getMemory().getBlock("rom1");
+            if (bank1 != null && bank1.isOverlay() && bank1.isInitialized() && bank1.getSize() == 0x4000) {
+                var bytes = new byte[0x4000];
+                bank1.getBytes(bank1.getStart(), bytes);
+                state.setVar(space.getAddress(0x4000), bytes.length, true, bytes);
+            }
+            var thread = machine.newThread();
+            var arithmetic = machine.getArithmetic();
+            var registers = Map.of("HL", (long) hl, "DE", (long) de, "BC", (long) bc, "A", 0L, "F", 0L, "SP", 0xffeeL);
+            for (var entry : registers.entrySet()) {
+                var register = language.getRegister(entry.getKey());
+                thread.getState().setVar(register, arithmetic.fromConst(entry.getValue(), register.getMinimumByteSize()));
+            }
+            // the return address, as CALL leaves it
+            state.setVar(space.getAddress(0xffee), 2, true, new byte[] {(byte) back.getOffset(), (byte) (back.getOffset() >> 8)});
+            watcher.armed = true;
+            thread.overrideCounter(literalTarget(program, call));
+            for (var steps = 0; !thread.getCounter().equals(back); steps++) {
+                if (steps > EMULATION_STEPS) {
+                    return null;
+                }
+                thread.stepInstruction();
+            }
+            return new Run(state, watcher.hit);
+        } catch (Exception e) {
+            // undecodable code, a userop, an unmapped read: not a plain routine
+            return null;
+        }
+    }
+
+    // state after the run; watched is set when the routine wrote anywhere in [watchFrom, watchTo]
+    private record Run(PcodeExecutorState<byte[]> state, boolean watched) {
+    }
+
+    private static class WriteWatcher implements PcodeEmulationCallbacks<byte[]> {
+        private final long from;
+        private final long to;
+        boolean armed;
+        boolean hit;
+
+        WriteWatcher(long from, long to) {
+            this.from = from;
+            this.to = to;
+        }
+
+        @Override
+        public <A, U> void dataWritten(PcodeThread<byte[]> thread, PcodeExecutorStatePiece<A, U> piece, Address address, int length, U value) {
+            if (armed && address.isMemoryAddress() && address.getOffset() <= to && address.getOffset() + length - 1 >= from) {
+                hit = true;
+            }
+        }
+    }
+
+    // the default-space address a CALL nn, CALL cc,nn or RST names, whatever overrides the analyzers added since
+    private static Address literalTarget(Program program, Instruction call) {
+        try {
+            var space = program.getAddressFactory().getDefaultAddressSpace();
+            if (call.getLength() == 1 && (call.getByte(0) & 0xc7) == 0xc7) {
+                return space.getAddress(call.getByte(0) & 0x38);
+            }
+            if (call.getLength() != 3) {
+                return null;
+            }
+            return space.getAddress((call.getByte(1) & 0xff) | (call.getByte(2) & 0xff) << 8);
+        } catch (MemoryAccessException e) {
+            return null;
+        }
+    }
+
+    // Whether a call with constant arguments returns without writing the ROM address range (where the MBC registers are);
+    // null when that cannot be decided
+    private static Boolean leavesBankAlone(Program program, Instruction call) {
+        var target = literalTarget(program, call);
+        if (call.getAddress().getAddressSpace().isOverlaySpace() || target == null) {
+            return null;
+        }
+        var values = loads(program, call, target, target);
+        var hl = values.get("HL");
+        var de = values.get("DE");
+        var b = values.get("B");
+        var c = values.get("C");
+        if (hl == null || de == null || b == null || c == null) {
+            return null;
+        }
+        var run = runCall(program, call, hl, de, b << 8 | c, 0, 0x7fff);
+        return run == null ? null : !run.watched();
+    }
+
+    // where the ROM bytes at a CPU address are: the same bank as the code, or bank 1 for entry code before any bank write
+    private static Address romSource(Program program, Instruction instr, int offset) {
+        var source = sameBankAddress(program, instr.getAddress(), offset);
+        if (source == null && offset >= 0x4000 && offset < 0x8000 && !instr.getAddress().getAddressSpace().isOverlaySpace()) {
+            var register = BankRegister.of(program);
+            if (register != null && fromReset(program, instr, register)) {
+                source = romAddress(program, instr.getAddress(), 1, offset, BankRegister.romBanks(program));
+            }
+        }
+        return source;
+    }
+
+    private static boolean emulatedCopy(Program program, Instruction call, int hl, int de, int bc, int source, int destination, int length) {
+        var space = program.getAddressFactory().getDefaultAddressSpace();
+        try {
+            var rom = new byte[length];
+            var from = romSource(program, call, source);
+            if (from == null || program.getMemory().getBytes(from, rom) != length || isZero(rom)) {
+                return false;
+            }
+            var run = runCall(program, call, hl, de, bc, 0, 0x7fff);
+            if (run == null || run.watched()) {
+                return false;
+            }
+            var after = run.state().getVar(space.getAddress(destination), length, true, PcodeExecutorStatePiece.Reason.INSPECT);
+            // exactly length bytes: the RAM behind them is still untouched
+            var tail = Math.min(16, 0x10000 - (destination + length));
+            var behind = tail <= 0 ? new byte[0] : run.state().getVar(space.getAddress(destination + length), tail, true, PcodeExecutorStatePiece.Reason.INSPECT);
+            return Arrays.equals(after, rom) && isZero(behind);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isZero(byte[] bytes) {
+        for (var x : bytes) {
+            if (x != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // maps [source, source + length) of ROM over the RAM range it is copied to, and points the calls and jumps seen into that RAM at the copy
+    private static void mapCopy(Program program, Instruction instr, int hl, int de, int length, AddressSet disassemble, AddressSet functions, MessageLog log) {
         var hram = de >= 0xff80 && de + length <= 0xffff;
         if (length == 0 || !hram && !(de >= 0xc000 && de + length <= 0xe000) || hl + length > (hl < 0x4000 ? 0x4000 : 0x8000)) {
             return;
         }
-        var source = sameBankAddress(program, instr.getAddress(), hl);
+        var source = romSource(program, instr, hl);
         var start = program.getAddressFactory().getDefaultAddressSpace().getAddress(de);
         var memory = program.getMemory();
         var sourceBlock = source == null ? null : memory.getBlock(source);
@@ -379,12 +627,14 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
                 if (values.containsKey(name) || !GameBoyJumpTableAnalyzer.writes(prev, program.getRegister(name))) {
                     continue;
                 }
-                values.put(name, switch (name) {
-                    case "HL" -> op == 0x21 ? word : null;
-                    case "DE" -> op == 0x11 ? word : null;
-                    case "B" -> op == 0x01 ? word >> 8 : op == 0x06 ? word : null;
-                    default -> op == 0x01 ? word & 0xff : op == 0x0e ? word : null;
-                });
+                // boxed throughout: a mixed int/null conditional would unbox the null
+                Integer value = switch (name) {
+                    case "HL" -> op == 0x21 ? Integer.valueOf(word) : null;
+                    case "DE" -> op == 0x11 ? Integer.valueOf(word) : null;
+                    case "B" -> op == 0x01 ? Integer.valueOf(word >> 8) : op == 0x06 ? Integer.valueOf(word) : null;
+                    default -> op == 0x01 ? Integer.valueOf(word & 0xff) : op == 0x0e ? Integer.valueOf(word) : null;
+                };
+                values.put(name, value);
             }
             cur = prev;
         }
@@ -415,6 +665,10 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
 
     private static Integer findBank(Program program, Instruction instr, BankRegister register, int banks) {
         var low = lastWrite(program, instr, address -> register.contains(address) && !register.containsHigh(address));
+        if (low == null && fromReset(program, instr, register)) {
+            // the MBCs map bank 1 at 4000-7FFF at power-up
+            return 1;
+        }
         if (low == null || low.value() == null) {
             return null;
         }
@@ -431,6 +685,55 @@ public class GameBoyBankAnalyzer extends AbstractAnalyzer {
         }
         // unseen upper bits stay 0
         return bank;
+    }
+
+    // CALL or JP at instr is reached from the cartridge entry point (0100h-0103h) along a straight line (conditional
+    // branches that fall through included) of at most 256 instructions with no write that could select a ROM bank: the power-up bank is still mapped
+    private static boolean fromReset(Program program, Instruction instr, BankRegister register) {
+        var listing = program.getListing();
+        var refs = program.getReferenceManager();
+        var sp = program.getRegister("SP");
+        var cur = instr;
+        for (int i = 0; i < 256; i++) {
+            var entry = false;
+            for (var ref : refs.getReferencesTo(cur.getAddress())) {
+                var from = ref.getFromAddress();
+                // the loader's entry point reference comes from the external space
+                if (from.isMemoryAddress() && (from.getAddressSpace().isOverlaySpace() || from.getOffset() < 0x100 || from.getOffset() > 0x103)) {
+                    return false;
+                }
+                entry = true;
+            }
+            var prev = listing.getInstructionBefore(cur.getAddress());
+            if (prev == null || !cur.getAddress().equals(prev.getFallThrough())) {
+                return entry || cur.getAddress().getOffset() == 0x100 && !cur.getAddress().getAddressSpace().isOverlaySpace();
+            }
+            if (entry) {
+                return false;
+            }
+            if (prev.getFlowType().isCall()) {
+                // a straight-line helper without register writes, or any routine that provably leaves ROM addresses alone
+                if (helperWrite(program, prev, register::contains) != HelperWrite.NONE && leavesBankAlone(program, prev) != Boolean.TRUE) {
+                    return false;
+                }
+            } else if (prev.getFlowType().isComputed() || prev.getFlowType().isTerminal()) {
+                return false;
+            } else {
+                for (var op : prev.getPcode()) {
+                    if (op.getOpcode() == PcodeOp.STORE && !isRegister(op.getInput(1), sp)) {
+                        var constant = constant(op.getInput(1), new HashMap<>());
+                        if (constant == null || register.contains(constant)) {
+                            return false;
+                        }
+                    }
+                    if (op.getOpcode() == PcodeOp.CALLOTHER && op.getNumInputs() > 1 && "mbc_write".equals(program.getLanguage().getUserDefinedOpName((int) op.getInput(0).getOffset()))) {
+                        return false;
+                    }
+                }
+            }
+            cur = prev;
+        }
+        return false;
     }
 
     // value is null when A is not a constant
