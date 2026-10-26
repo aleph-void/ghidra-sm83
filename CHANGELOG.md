@@ -19,6 +19,8 @@ Ghidra-Rare fork (see GHIDRA-RARE.md).
 
 - Echo RAM blocks are executable, like the work RAM they mirror
 - The extension (and its zip) is named SM83
+- The loader's hardware type option is a plain enum option (a drop-down) instead of radio buttons: the
+  custom editor hook changed its signature in Ghidra 12.2, which broke the build there
 
 ### Fixed
 

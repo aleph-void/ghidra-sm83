@@ -15,12 +15,10 @@ package fi.gekkio.ghidraboy;
 
 import ghidra.app.util.Option;
 
-import javax.swing.*;
-import java.awt.*;
-
+// The hardware type choice. Ghidra shows an enum-valued option as a drop-down. (An earlier version
+// added radio buttons through Option.getCustomEditorComponent(), whose signature changed in Ghidra
+// 12.2 (it takes an AddressFactoryService), so one source could not build for 12.1 and 12.2.)
 public class GameBoyKindOption extends Option {
-    private final Component customEditor = createCustomEditor(this);
-
     public GameBoyKindOption(String name, GameBoyKind value) {
         super(name, GameBoyKind.class, value, null, null);
     }
@@ -30,32 +28,7 @@ public class GameBoyKindOption extends Option {
     }
 
     @Override
-    public Component getCustomEditorComponent() {
-        return this.customEditor;
-    }
-
-    @Override
     public Option copy() {
         return new GameBoyKindOption(this.getName(), (GameBoyKind) this.getValue(), this.getArg(), this.getGroup());
-    }
-
-    private static Component createCustomEditor(Option option) {
-        var panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.PAGE_AXIS));
-
-        var gb = new JRadioButton("Game Boy");
-        gb.addActionListener(e -> option.setValue(GameBoyKind.GB));
-        gb.setSelected(GameBoyKind.GB.equals(option.getValue()));
-
-        var cgb = new JRadioButton("Game Boy Color");
-        cgb.addActionListener(e -> option.setValue(GameBoyKind.CGB));
-        cgb.setSelected(GameBoyKind.CGB.equals(option.getValue()));
-
-        var group = new ButtonGroup();
-        group.add(gb);
-        group.add(cgb);
-        panel.add(gb);
-        panel.add(cgb);
-        return panel;
     }
 }
