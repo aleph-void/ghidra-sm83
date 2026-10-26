@@ -1,0 +1,728 @@
+# SM83 emulator cases; every expectation worked out by hand from the CPU manual.
+# F bits: Z=0x80 N=0x40 H=0x20 C=0x10.  Code runs at 1000h; SP starts at C100h.
+
+# ---- 8-bit ALU, flags --------------------------------------------------------------
+case add_b_zero_hc
+code 80
+set A 0x3a
+set B 0xc6
+expect A 0x00
+expect F 0xb0
+end
+case add_b_half_only
+code 80
+set A 0x0f
+set B 0x01
+expect A 0x10
+expect F 0x20
+end
+case add_b_carry_only
+code 80
+set A 0xf0
+set B 0x20
+expect A 0x10
+expect F 0x10
+end
+case add_a_hl_mem
+code 86
+set A 0x10
+set HL 0xc000
+set ram:c000 0x22
+expect A 0x32
+expect F 0x00
+end
+case add_imm_clears_old_flags
+code c60f
+set A 0x01
+set F 0x70
+expect A 0x10
+expect F 0x20
+end
+case adc_carry_in_half
+code 88
+set A 0xe1
+set B 0x0f
+set F 0x10
+expect A 0xf1
+expect F 0x20
+end
+case adc_wrap_to_zero
+code 88
+set A 0xff
+set B 0x00
+set F 0x10
+expect A 0x00
+expect F 0xb0
+end
+case adc_imm_carry_chain
+code ceff
+set A 0x01
+set F 0x10
+expect A 0x01
+expect F 0x30
+end
+case sub_b_equal
+code 90
+set A 0x3e
+set B 0x3e
+expect A 0x00
+expect F 0xc0
+end
+case sub_b_borrow
+code 90
+set A 0x00
+set B 0x01
+expect A 0xff
+expect F 0x70
+end
+case sub_hl_mem_half_borrow
+code 96
+set A 0x10
+set HL 0xc000
+set ram:c000 0x01
+expect A 0x0f
+expect F 0x60
+end
+case sbc_b_no_flags_but_n
+code 98
+set A 0x3b
+set B 0x2a
+set F 0x10
+expect A 0x10
+expect F 0x40
+end
+case sbc_b_half_from_carry
+code 98
+set A 0x10
+set B 0x00
+set F 0x10
+expect A 0x0f
+expect F 0x60
+end
+case sbc_equal_with_carry_borrows
+code 98
+set A 0x05
+set B 0x05
+set F 0x10
+expect A 0xff
+expect F 0x70
+end
+case and_b_zero_sets_h
+code a0
+set A 0xf0
+set B 0x0f
+set F 0x10
+expect A 0x00
+expect F 0xa0
+end
+case and_imm
+code e63c
+set A 0xff
+expect A 0x3c
+expect F 0x20
+end
+case or_b_zero
+code b0
+set A 0x00
+set B 0x00
+set F 0x70
+expect A 0x00
+expect F 0x80
+end
+case or_imm
+code f6f0
+set A 0x0f
+expect A 0xff
+expect F 0x00
+end
+case xor_a_clears
+code af
+set A 0x5c
+set F 0x70
+expect A 0x00
+expect F 0x80
+end
+case xor_imm
+code eeff
+set A 0xaa
+expect A 0x55
+expect F 0x00
+end
+case cp_b_keeps_a
+code b8
+set A 0x3c
+set B 0x2f
+expect A 0x3c
+expect F 0x60
+end
+case cp_imm_carry
+code fe40
+set A 0x3c
+expect A 0x3c
+expect F 0x50
+end
+case inc_b_wrap_keeps_carry
+code 04
+set B 0xff
+set F 0x10
+expect B 0x00
+expect F 0xb0
+end
+case dec_b_to_zero
+code 05
+set B 0x01
+expect B 0x00
+expect F 0xc0
+end
+case dec_b_wrap_keeps_carry
+code 05
+set B 0x00
+set F 0x10
+expect B 0xff
+expect F 0x70
+end
+case inc_hl_mem_half
+code 34
+set HL 0xc000
+set ram:c000 0x0f
+expect ram:c000 0x10
+expect F 0x20
+end
+case dec_hl_mem_half
+code 35
+set HL 0xc000
+set ram:c000 0x10
+expect ram:c000 0x0f
+expect F 0x60
+end
+case cpl
+code 2f
+set A 0x35
+set F 0x90
+expect A 0xca
+expect F 0xf0
+end
+case scf_keeps_z
+code 37
+set F 0xe0
+expect F 0x90
+end
+case ccf_toggles
+code 3f
+set F 0x10
+expect F 0x00
+end
+case ccf_keeps_z
+code 3f
+set F 0x80
+expect F 0x90
+end
+# ---- DAA -----------------------------------------------------------------------------
+case daa_add_low_nibble
+code 27
+set A 0x7d
+expect A 0x83
+expect F 0x00
+end
+case daa_add_carry_out
+code 27
+set A 0x9a
+expect A 0x00
+expect F 0x90
+end
+case daa_sub_half
+code 27
+set A 0x2b
+set F 0x60
+expect A 0x25
+expect F 0x40
+end
+case daa_sub_carry
+code 27
+set A 0xee
+set F 0x70
+expect A 0x88
+expect F 0x50
+end
+case daa_add_h_flag_forces_six
+code 27
+set A 0x10
+set F 0x20
+expect A 0x16
+expect F 0x00
+end
+# ---- rotates and shifts ----------------------------------------------------------------
+case rlca
+code 07
+set A 0x85
+expect A 0x0b
+expect F 0x10
+end
+case rla_zero_result_clears_z
+code 17
+set A 0x80
+expect A 0x00
+expect F 0x10
+end
+case rrca
+code 0f
+set A 0x01
+expect A 0x80
+expect F 0x10
+end
+case rra_carry_in
+code 1f
+set A 0x01
+set F 0x10
+expect A 0x80
+expect F 0x10
+end
+case rlc_b_zero_sets_z
+code cb00
+set B 0x00
+set F 0x70
+expect B 0x00
+expect F 0x80
+end
+case rlc_b
+code cb00
+set B 0x80
+expect B 0x01
+expect F 0x10
+end
+case rl_b_carry_out_zero
+code cb10
+set B 0x80
+expect B 0x00
+expect F 0x90
+end
+case rr_c_carry_in
+code cb19
+set C 0x01
+set F 0x10
+expect C 0x80
+expect F 0x10
+end
+case rrc_hl_mem
+code cb0e
+set HL 0xc000
+set ram:c000 0x01
+expect ram:c000 0x80
+expect F 0x10
+end
+case sla_b
+code cb20
+set B 0xc1
+expect B 0x82
+expect F 0x10
+end
+case sra_b_keeps_msb
+code cb28
+set B 0x81
+expect B 0xc0
+expect F 0x10
+end
+case srl_b
+code cb38
+set B 0x81
+expect B 0x40
+expect F 0x10
+end
+case swap_a
+code cb37
+set A 0xf1
+set F 0xf0
+expect A 0x1f
+expect F 0x00
+end
+case swap_hl_zero
+code cb36
+set HL 0xc000
+expect ram:c000 0x00
+expect F 0x80
+end
+# ---- BIT / RES / SET ---------------------------------------------------------------------
+case bit7_a_set
+code cb7f
+set A 0x80
+set F 0x10
+expect A 0x80
+expect F 0x30
+end
+case bit0_b_clear
+code cb40
+set B 0xfe
+set F 0x10
+expect F 0xb0
+end
+case bit3_hl_mem
+code cb5e
+set HL 0xc000
+set ram:c000 0x08
+expect F 0x20
+end
+case res0_a_keeps_flags
+code cb87
+set A 0xff
+set F 0x50
+expect A 0xfe
+expect F 0x50
+end
+case set7_hl_mem
+code cbfe
+set HL 0xc000
+expect ram:c000 0x80
+end
+case set0_b
+code cbc0
+set B 0x10
+expect B 0x11
+end
+# ---- 16-bit arithmetic -------------------------------------------------------------------
+case inc_bc_no_flags
+code 03
+set BC 0xffff
+set F 0xf0
+expect BC 0x0000
+expect F 0xf0
+end
+case dec_de_wrap
+code 1b
+set DE 0x0000
+expect DE 0xffff
+end
+case add_hl_bc_half
+code 09
+set HL 0x0fff
+set BC 0x0001
+set F 0x80
+expect HL 0x1000
+expect F 0xa0
+end
+case add_hl_bc_carry_wrap
+code 09
+set HL 0x8000
+set BC 0x8000
+expect HL 0x0000
+expect F 0x10
+end
+case add_hl_sp_full
+code 39
+set HL 0x0fff
+set SP 0x0fff
+expect HL 0x1ffe
+expect F 0x20
+end
+case add_sp_pos
+code e801
+set SP 0x00ff
+expect SP 0x0100
+expect F 0x30
+end
+case add_sp_neg
+code e8fe
+set SP 0xc002
+expect SP 0xc000
+expect F 0x30
+end
+case add_sp_neg_no_flags
+code e8f0
+set SP 0xc000
+expect SP 0xbff0
+expect F 0x00
+end
+case ld_hl_sp_pos
+code f805
+set SP 0xfff8
+expect HL 0xfffd
+expect SP 0xfff8
+expect F 0x00
+end
+case ld_hl_sp_neg
+code f8ff
+set SP 0x0100
+set F 0xf0
+expect HL 0x00ff
+expect F 0x00
+end
+case ld_hl_sp_flags
+code f801
+set SP 0x00ff
+expect HL 0x0100
+expect F 0x30
+end
+# ---- loads, every addressing mode --------------------------------------------------------
+case ld_b_c
+code 41
+set C 0x77
+expect B 0x77
+end
+case ld_a_hl
+code 7e
+set HL 0xc010
+set ram:c010 0x99
+expect A 0x99
+end
+case ld_hl_a
+code 77
+set HL 0xc010
+set A 0x42
+expect ram:c010 0x42
+end
+case ld_hl_imm
+code 3655
+set HL 0xc020
+expect ram:c020 0x55
+end
+case ld_r_imm
+code 0e5a
+expect C 0x5a
+end
+case ld_bc_imm16
+code 013412
+expect BC 0x1234
+end
+case ld_sp_imm16
+code 31feff
+expect SP 0xfffe
+end
+case ld_a_bc_de
+code 0a1a
+set BC 0xc000
+set DE 0xc001
+set ram:c000 0x11
+set ram:c001 0x22
+expect A 0x22
+end
+case ld_bc_de_a
+code 0212
+set A 0x6b
+set BC 0xc000
+set DE 0xc001
+expect ram:c000 0x6b
+expect ram:c001 0x6b
+end
+case ld_a_hl_inc
+code 2a
+set HL 0xc000
+set ram:c000 0x77
+expect A 0x77
+expect HL 0xc001
+end
+case ld_a_hl_dec
+code 3a
+set HL 0xc000
+set ram:c000 0x78
+expect A 0x78
+expect HL 0xbfff
+end
+case ld_hl_inc_a
+code 22
+set HL 0xc000
+set A 0x55
+expect ram:c000 0x55
+expect HL 0xc001
+end
+case ld_hl_dec_a
+code 32
+set HL 0xc001
+set A 0x56
+expect ram:c001 0x56
+expect HL 0xc000
+end
+case ldh_store_load
+code e044f044
+set A 0x91
+expect ram:ff44 0x91
+expect A 0x91
+end
+case ldh_c_store
+code e2
+set A 0x03
+set C 0x80
+expect ram:ff80 0x03
+end
+case ldh_c_load
+code f2
+set C 0x81
+set ram:ff81 0x7e
+expect A 0x7e
+end
+case ld_a_nn
+code fa00c0
+set ram:c000 0x31
+expect A 0x31
+end
+case ld_nn_a
+code ea01c0
+set A 0x32
+expect ram:c001 0x32
+end
+case ld_nn_a_banked_wram
+code ea00d0
+set A 0x33
+expect ram:d000 0x33
+end
+case ld_a_nn_banked_vram
+code fa00a0
+set ram:a000 0x34
+expect A 0x34
+end
+case ld_a_nn_vram_window
+code fa0080
+set ram:8000 0x35
+expect A 0x35
+end
+case ld_nn_a_mbc_register
+code ea0020
+set A 0x03
+expect ram:2000 0x03
+end
+case ld_nn_sp
+code 0800c0
+set SP 0x1234
+expect ram:c000/2 0x1234
+end
+case ld_sp_hl
+code f9
+set HL 0xc3d0
+expect SP 0xc3d0
+end
+# ---- stack, calls, jumps -----------------------------------------------------------------
+case push_bc
+code c5
+set BC 0x1234
+expect SP 0xc0fe
+expect ram:c0fe/2 0x1234
+end
+case push_af_low_nibble
+code f5
+set AF 0xabf0
+expect ram:c0fe/2 0xabf0
+end
+case pop_af_masks_low_nibble
+code f1
+set SP 0xc0fe
+set ram:c0fe/2 0x12ff
+expect AF 0x12f0
+expect SP 0xc100
+end
+case pop_hl
+code e1
+set SP 0xc0fe
+set ram:c0fe/2 0x5678
+expect HL 0x5678
+expect SP 0xc100
+end
+case call_ret
+code cd1010000000000000000000000000003cc9
+main 3
+expect A 0x01
+expect SP 0xc100
+expect ram:c0fe/2 0x1003
+end
+case call_nz_taken
+code c41010000000000000000000000000003cc9
+main 3
+set F 0x00
+expect A 0x01
+expect ram:c0fe/2 0x1003
+end
+case call_nz_not_taken
+code c41010000000000000000000000000003cc9
+main 3
+set F 0x80
+expect A 0x00
+expect SP 0xc100
+end
+case ret_z_taken
+code c8
+set F 0x80
+set SP 0xc0fe
+set ram:c0fe/2 0x1005
+main 5
+expect SP 0xc100
+end
+case ret_z_not_taken
+code c8
+set F 0x00
+expect SP 0xc100
+end
+case rst_18
+code df
+set ram:0018 0xc9
+expect SP 0xc100
+expect ram:c0fe/2 0x1001
+end
+case reti_sets_ime
+code d9
+set SP 0xc0fe
+set ram:c0fe/2 0x1005
+main 5
+expect SP 0xc100
+expect ime 1
+end
+case jp_nn
+code c3081000000000003c
+main 8
+expect A 0x00
+end
+case jp_hl
+code e9
+set HL 0x1005
+main 5
+expect HL 0x1005
+end
+case jp_nz_not_taken
+code c20810
+set F 0x80
+main 3
+expect A 0x00
+end
+case jr_forward_taken
+code 20023c3c
+set F 0x00
+main 4
+expect A 0x00
+end
+case jr_not_taken_runs_through
+code 20023c3c
+set F 0x80
+expect A 0x02
+end
+case jr_loop
+code 06033c0520fc
+expect A 0x03
+expect B 0x00
+expect F 0xc0
+end
+case jr_unconditional_skips_one
+code 18013c3c
+main 4
+expect A 0x01
+end
+# ---- CPU control -------------------------------------------------------------------------
+case di
+code f3
+
+expect ime 0
+end
+case ei
+code fb
+expect ime 1
+end
+case halt
+code 76
+expect halts 1
+end
+case stop_two_bytes
+code 1000
+expect stops 1
+end
+case nop
+code 00
+set A 0x12
+set F 0x50
+expect A 0x12
+expect F 0x50
+end
