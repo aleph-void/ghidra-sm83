@@ -175,6 +175,48 @@
       <register name="SP"/>
     </unaffected>
   </prototype>
+  <!-- SDCC (GBDK-2020) default calling convention, version 1 (sdcccall 1): first parameter in A (8 bits), DE (16)
+       or DEBC (32); the second in E (after A), BC (16 bits after A or DE) or A (after BC/DEBC); the rest on the stack,
+       popped by the callee (extrapop 2 assumes no stack parameters: with unknown, callers lose track of SP and
+       decompile with the return addresses on the stack; a function that pops parameters needs its purge set).
+       8-bit results in A, 16-bit in BC, 32-bit in DEBC -->
+  <prototype name="__sdcccall1" extrapop="2" stackshift="2" strategy="register">
+    <input>
+      <pentry minsize="1" maxsize="1"><register name="A"/></pentry>
+      <pentry minsize="1" maxsize="2"><register name="DE"/></pentry>
+      <pentry minsize="1" maxsize="2"><register name="BC"/></pentry>
+      <pentry minsize="4" maxsize="4"><addr space="join" piece1="DE" piece2="BC"/></pentry>
+      <pentry minsize="1" maxsize="500" align="1"><addr offset="2" space="stack"/></pentry>
+    </input>
+    <output>
+      <pentry minsize="1" maxsize="1"><register name="A"/></pentry>
+      <pentry minsize="2" maxsize="2"><register name="BC"/></pentry>
+      <pentry minsize="4" maxsize="4"><addr space="join" piece1="DE" piece2="BC"/></pentry>
+    </output>
+    <unaffected>
+      <register name="SP"/>
+    </unaffected>
+    <killedbycall>
+      <register name="F"/>
+    </killedbycall>
+  </prototype>
+  <!-- SDCC sdcccall 0: every parameter on the stack (caller pops); 8-bit results in E, 16-bit in DE, 32-bit in HLDE -->
+  <prototype name="__sdcccall0" extrapop="2" stackshift="2" strategy="register">
+    <input>
+      <pentry minsize="1" maxsize="500" align="1"><addr offset="2" space="stack"/></pentry>
+    </input>
+    <output>
+      <pentry minsize="1" maxsize="1"><register name="E"/></pentry>
+      <pentry minsize="2" maxsize="2"><register name="DE"/></pentry>
+      <pentry minsize="4" maxsize="4"><addr space="join" piece1="HL" piece2="DE"/></pentry>
+    </output>
+    <unaffected>
+      <register name="SP"/>
+    </unaffected>
+    <killedbycall>
+      <register name="F"/>
+    </killedbycall>
+  </prototype>
   <!-- inline jump table dispatcher: word table after the call, indexed by A -->
   <callfixup name="sm83_inline_jump_table">
     <pcode dynamic="true">
