@@ -11,4 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-rootProject.name = "ghidra-sm83"
+// The extension is named SM83 in extension.properties; the zip and the folder inside it carry that name,
+// for this build and for Ghidra-Rare's release build (tools/build-module.sh --standard), whose Groovy
+// build takes the name from the project.
+rootProject.name =
+    file("extension.properties")
+        .takeIf { it.exists() }
+        ?.readLines()
+        ?.firstOrNull { it.startsWith("name=") }
+        ?.substringAfter("=")
+        ?.trim()
+        ?: "ghidra-sm83"

@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+Ghidra-Rare fork (see GHIDRA-RARE.md).
+
+### Added
+
+- `__sdcccall1` and `__sdcccall0` calling conventions for SDCC/GBDK-2020 code
+- `GameBoySymbolImport` script: labels and functions from RGBDS/WLA-DX/BGB `.sym` and GBDK
+  `.noi` files
+- Routines copied to RAM by a helper that is not one of the recognised loops (any direction,
+  any counter) are found by running the helper in the emulator on the ROM bytes
+- Entry code that calls into 0x4000-0x7fff before any bank-register write, or copies from there,
+  resolves to bank 1, the power-up bank
+- Ghidra 12.1.4 and 12.2 are supported
+
+### Changed
+
+- Echo RAM blocks are executable, like the work RAM they mirror
+- The extension (and its zip) is named SM83
+
+### Fixed
+
+- Latent `NullPointerException` in the RAM-code scan when a register before the copy loop was set
+  by something other than a constant load (a mixed `int`/`null` conditional unboxed the null)
+- A jump into a routine copied to RAM left an empty function at the default-space address and a
+  stale "Bad Instruction" bookmark; a jump into other RAM code also kept its bookmark
+
 ## 20260915 - 2026-09-15
 
 First release of ghidra-sm83, the continuation of the archived Gekkio/GhidraBoy.

@@ -10,3 +10,7 @@ build/
 dist/
 
 *.sla
+
+# Ghidra-Rare test and build output
+/lib/
+/dist/
