@@ -65,7 +65,8 @@ public final class GameBoyUtils {
         try {
             var block = program.getMemory().createByteMappedBlock(name, start, mapped, length, false);
             block.setComment("Echo RAM (mirror of " + mapped + ")");
-            block.setPermissions(true, true, false);
+            // the CPU can execute from it like from the work RAM it mirrors
+            block.setPermissions(true, true, true);
         } catch (LockException | MemoryConflictException | AddressOverflowException | IllegalArgumentException e) {
             log.appendException(e);
         }
